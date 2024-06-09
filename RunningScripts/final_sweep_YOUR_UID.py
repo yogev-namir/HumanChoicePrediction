@@ -1,4 +1,5 @@
 import wandb
+
 YOUR_WANDB_USERNAME = "yogev-avishag"
 project = "NLP2024_PROJECT_yogev-avishag"
 
@@ -11,7 +12,7 @@ command = [
     ]
 
 sweep_config = {
-    "name": "LSTM: Dropout Rate test 08.06.2024",
+    "name": "Final Sweep Submission",
     "method": "grid",
     "metric": {
         "goal": "maximize",
@@ -20,9 +21,8 @@ sweep_config = {
     "parameters": {
         "ENV_HPT_mode": {"values": [False]},
         "architecture": {"values": ["LSTM"]},
-        "seed": {"values": list(range(1, 2))},
+        "seed": {"values": [1]},
         "features": {"values": ["EFs"]},
-        "dropout": {"values": [0.6, 0.4, 0.2, 0.0]}
     },
     "command": command
 }
