@@ -11,6 +11,9 @@ import wandb
 from utils import *
 import pickle
 from utils import personas
+import matplotlib.pyplot as plt
+import os
+import seaborn as sns
 
 
 class Environment:
@@ -49,7 +52,7 @@ class Environment:
 
         if online_sim_type == "init":
             raise NotImplementedError("The 'init' simulation type is not implemented yet.")
-        
+
         elif self.config["task"] == "on_policy":
             human_train_size = self.config["human_train_size"]
             test_size = ON_POLICY_TEST_SIZE
@@ -76,7 +79,7 @@ class Environment:
             train_sampler = NewUserBatchSampler(train_dataset, batch_size=ENV_BATCH_SIZE, shuffle=True)
             train_dataloader = DataLoader(train_dataset, batch_sampler=train_sampler, shuffle=False)
             phases += [("Train", train_dataloader)]
-        
+
         if self.config["offline_simulation_size"] != 0:
             if self.config.personas_group_number == -1:
                 llm_users_options = range(TOTAL_LLM_USERS)
@@ -125,6 +128,13 @@ class Environment:
                                      lr=self.env_learning_rate)
         self.set_train_mode()
         metrics = Metrics("ENV")
+
+        # Initialize dictionaries to keep track of the running mean and counts
+        phase_names = [phase[0] for phase in phases]
+        history_length_means = {phase: {epoch: {i: 0 for i in range(1, DATA_ROUNDS_PER_GAME + 1)} for epoch in range(self.config["total_epochs"])} for phase in phase_names}
+        history_length_counts = {phase: {epoch: {i: 0 for i in range(1, DATA_ROUNDS_PER_GAME + 1)} for epoch in range(self.config["total_epochs"])} for phase in phase_names}
+        history_length_importance = {phase: {epoch: {i: 0 for i in range(1, DATA_ROUNDS_PER_GAME + 1)} for epoch in range(self.config["total_epochs"])} for phase in phase_names}
+
         for epoch in range(self.config["total_epochs"]):
             result_saver = ResultSaver(config=self.config, epoch=epoch)
             print("#" * 16)
@@ -136,7 +146,6 @@ class Environment:
                 online_simulation_dataloader = DataLoader(online_simulation_dataset,
                                                           batch_sampler=online_simulation_sampler, shuffle=False)
             for phase, dataloader in phases:
-                # print(phase)
                 metrics.set_stage(phase)
                 if phase == "Online Simulation" and online_sim_type == "before_epoch":
                     dataloader = online_simulation_dataloader
@@ -167,16 +176,16 @@ class Environment:
                     model_vectors = {"x": env_input}
 
                     if self.use_user_vector:
-                        model_vectors["user_vector"] = self.model.user_vectors[batch["user_id"].to("cpu").numpy()].to(
-                            device)
-                        model_vectors["game_vector"] = self.model.game_vectors[batch["user_id"].to("cpu").numpy()].to(
-                            device)
+                        model_vectors["user_vector"] = self.model.user_vectors[batch["user_id"].to("cpu").numpy()].to(device)
+                        model_vectors["game_vector"] = self.model.game_vectors[batch["user_id"].to("cpu").numpy()].to(device)
                     if phase != "Test":
                         model_output = self.model(model_vectors)
                     else:
                         with torch.no_grad():
                             model_output = self.model(model_vectors)
                     output = model_output["output"]
+                    attention_scores = model_output["attention_scores"]
+
                     mask = (batch["action_taken"] != -100).flatten()
                     relevant_predictions = output.reshape(batch_size * DATA_ROUNDS_PER_GAME, -1)[mask]
                     relevant_ground_truth = batch["action_taken"].flatten()[mask]
@@ -191,8 +200,7 @@ class Environment:
                     n_actions += len(proba_to_right_action)
                     target = batch["action_taken"].reshape(-1)[batch["is_sample"].reshape(-1)]
                     total_weight += batch["weight"][batch["is_sample"]].sum().item()
-                    loss = (self.loss_fn(relevant_predictions, relevant_ground_truth) * relevant_weight
-                            ).mean()
+                    loss = (self.loss_fn(relevant_predictions, relevant_ground_truth) * relevant_weight).mean()
                     total_loss += loss.item()
                     if phase != "Test":
                         optimizer.zero_grad()
@@ -200,8 +208,7 @@ class Environment:
                         optimizer.step()
                     else:
                         result_saver.add_results(ids=batch["action_id"].flatten()[mask].cpu(),
-                                                 user_id=torch.repeat_interleave(batch["user_id"],
-                                                                                 batch["bot_strategy"].shape[-1])[mask].cpu(),
+                                                 user_id=torch.repeat_interleave(batch["user_id"], batch["bot_strategy"].shape[-1])[mask].cpu(),
                                                  bot_strategy=batch["bot_strategy"].flatten()[mask].cpu(),
                                                  accuracy=proba_to_right_action.cpu())
 
@@ -210,6 +217,29 @@ class Environment:
                         self.model.user_vectors[batch["user_id"].to("cpu").numpy()] = updated_user_vectors.squeeze()
                         updated_game_vectors = model_output["game_vector"].to("cpu").detach()
                         self.model.game_vectors[batch["user_id"].to("cpu").numpy()] = updated_game_vectors.squeeze()
+                    
+                    # Loop through each round and update histogram based on attention scores
+                    for round in range(DATA_ROUNDS_PER_GAME):
+                        for history_length in range(1, round+2):
+                            attention_score = attention_scores[:, round, history_length-1]
+
+                            # Extract correct predictions for the current history length
+                            correct_predictions = (relevant_predictions.argmax(dim=1) == relevant_ground_truth).float()
+
+                            offset = 0
+                            for score, n_round in zip(attention_score, batch['n_rounds']):
+                                if n_round >= history_length:
+                                    index = offset + history_length - 1
+                                    individual_score = score * (2 * correct_predictions[index] - 1)
+                                    # Update running mean for this history length
+                                    current_mean = history_length_means[phase][epoch][history_length]
+                                    current_count = history_length_counts[phase][epoch][history_length]
+                                    new_count = current_count + 1
+                                    new_mean = current_mean + (individual_score - current_mean) / new_count
+                                    history_length_means[phase][epoch][history_length] = new_mean
+                                    history_length_counts[phase][epoch][history_length] = new_count
+                                offset += n_round
+
 
                 metrics.write("TotalLoss", total_loss)
                 if n_actions:
@@ -237,8 +267,67 @@ class Environment:
                         print(prefix+"accuracy_per_mean_user_and_bot: ", accuracy_per_mean_user_and_bot)
                 wandb.log(metrics.all)
             metrics.next_epoch()
+            # Clear cache at the end of each epoch
+            torch.cuda.empty_cache()
+
+        # Apply softmax to get a probability distribution from the running means
+        for phase_name in phase_names:
+            for epoch in range(self.config["total_epochs"]):
+                scores = [history_length_means[phase_name][epoch][hl] for hl in range(1, DATA_ROUNDS_PER_GAME + 1)]
+                scores_tensor = torch.tensor(scores)
+                softmax_scores = torch.softmax(scores_tensor, dim=0).tolist()
+                
+                for history_length in range(1, DATA_ROUNDS_PER_GAME + 1):
+                    history_length_importance[phase_name][epoch][history_length] = softmax_scores[history_length - 1]
+
+
+        self.plot_heatmaps(mean_attention_scores=history_length_importance,
+                           accuracy=accuracy_per_mean_user_and_bot, 
+                           file_name='heatmap_plot',
+                           directory='plots')    
         self.model.to("cpu")
         self.set_eval_mode()
+        
+
+    def plot_heatmaps(self, mean_attention_scores, accuracy, file_name, directory):
+        # Create the directory if it does not exist
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        
+        for phase, epochs_data in mean_attention_scores.items():
+            # Prepare data for plotting
+            epochs = list(epochs_data.keys())
+            history_lengths = list(epochs_data[epochs[0]].keys())
+            
+            data = np.zeros((len(history_lengths), len(epochs)))
+            
+            for i, epoch in enumerate(epochs):
+                for j, history_length in enumerate(history_lengths):
+                    data[j, i] = epochs_data[epoch][history_length]
+            
+            # Create a heatmap
+            plt.figure(figsize=(12, 10))
+            heatmap = sns.heatmap(data, annot=True, fmt=".3f", xticklabels=epochs, yticklabels=history_lengths)
+            
+            # Reduce the font size
+            for text in heatmap.texts:
+                text.set_fontsize(6)
+            
+            # Rotate annotations if necessary (e.g., for better readability)
+            for text in heatmap.texts:
+                text.set_rotation(45)
+
+            plt.xlabel('Epoch')
+            plt.ylabel('History Length')
+            plt.title(f'Attention Score Heatmap per History Length and Epoch ({phase})')
+            
+            # Save the plot
+            save_path = os.path.join(directory, f"{file_name}_{phase}_{accuracy}.png")
+            plt.savefig(save_path)
+            plt.close()  # Close the figure to avoid memory leaks
+
+            
+
 
     def save(self):
         with open(self.model_path, 'wb') as file:

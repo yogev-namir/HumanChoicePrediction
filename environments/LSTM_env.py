@@ -2,10 +2,11 @@ from environments import environment
 import torch
 import torch.nn as nn
 from SpecialLSTM import SpecialLSTM
+from MoreSpecialLSTM import MoreSpecialLSTM
 from consts import *
 
 
-class LSTM_env_ARC(SpecialLSTM):
+class LSTM_env_ARC(MoreSpecialLSTM):
     def forward(self, vectors, **kwargs):
         data = super().forward(vectors["x"], vectors["game_vector"], vectors["user_vector"])
         return data

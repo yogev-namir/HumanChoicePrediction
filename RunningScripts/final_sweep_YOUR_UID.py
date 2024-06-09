@@ -1,6 +1,6 @@
 import wandb
-YOUR_WANDB_USERNAME = "eilamshapira"
-project = "NLP2024_PROJECT_YOUR_UID"
+YOUR_WANDB_USERNAME = "yogev-avishag"
+project = "NLP2024_PROJECT_yogev-avishag"
 
 command = [
         "${ENVIRONMENT_VARIABLE}",
@@ -11,7 +11,7 @@ command = [
     ]
 
 sweep_config = {
-    "name": "LSTM: SimFactor=0/4 for any features representation",
+    "name": "LSTM: Dropout Rate test 08.06.2024",
     "method": "grid",
     "metric": {
         "goal": "maximize",
@@ -20,9 +20,9 @@ sweep_config = {
     "parameters": {
         "ENV_HPT_mode": {"values": [False]},
         "architecture": {"values": ["LSTM"]},
-        "seed": {"values": list(range(1, 6))},
-        "online_simulation_factor": {"values": [0, 4]},
-        "features": {"values": ["EFs", "GPT4", "BERT"]},
+        "seed": {"values": list(range(1, 2))},
+        "features": {"values": ["EFs"]},
+        "dropout": {"values": [0.6, 0.4, 0.2, 0.0]}
     },
     "command": command
 }

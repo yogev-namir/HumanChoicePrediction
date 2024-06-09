@@ -12,3 +12,5 @@ dependencies:
     - transformers
     - scipy
     - scikit-learn
+    - torch
+    - seaborn
