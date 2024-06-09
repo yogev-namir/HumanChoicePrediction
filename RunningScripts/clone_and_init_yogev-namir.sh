@@ -2,7 +2,7 @@
 git clone https://github.com/yogev-namir/HumanChoicePrediction.git
 
 # Your main sweep:
-python final_sweep_YOUR_UID.py
+python final_sweep_yogev-namir.py
 
 # More runs appear in your report:
 # python sweep_1.py
